@@ -232,28 +232,28 @@ function weatherAdvice(tonight, tomorrow) {
   return { umbrella, coat, action };
 }
 
-// 统一决策文案：以「下班/提醒时间」为基准，不建议早于下班点走；偶尔早退靠多设一个更早的时间
+// 统一决策文案：以「下班时间」为基准，措辞职业、适合给同事/上级看
 function decide(refTime, risk, nowMinutes, offworkMinutes) {
   const delta = Math.max(0, offworkMinutes - nowMinutes);
 
   if (risk === 'good') {
     return {
       recommendText: `${refTime} 准点走`,
-      headline: '到点走就行，不急也能再等等',
+      headline: '路况平稳，按点走就行',
       suggestion: `${refTime} 出发预计 ${offworkMinutes} 分到家，路况稳。`
     };
   }
   if (risk === 'warning') {
     return {
-      recommendText: `${refTime} 一到就走`,
-      headline: '到点别拖，越晚越堵',
+      recommendText: `${refTime} 记得准点走`,
+      headline: '记得准时走，晚走会更堵',
       suggestion: `${refTime} 出发预计 ${offworkMinutes} 分，比现在多约 ${delta} 分。`
     };
   }
   return {
-    recommendText: `${refTime} 立刻走`,
-    headline: '到点马上走，今天值得就早退',
-    suggestion: `${refTime} 出发预计 ${offworkMinutes} 分，雨和堵会叠加，越晚越糟。`
+    recommendText: `${refTime} 记得准点走`,
+    headline: '记得准时走，雨和堵会叠加',
+    suggestion: `${refTime} 出发预计 ${offworkMinutes} 分，越晚越堵，建议准点。`
   };
 }
 
@@ -648,7 +648,7 @@ async function aiSummary(settings, scan) {
     {
       role: 'system',
       content:
-        '你是"跑路准时宝"的播报助手。用户每天固定在指定下班时间走，不会早于这个时间离开工位。请根据"系统结论"、实时路况和今明天气，用一句话（40 字以内）口语化地告诉他：到点要不要准时走、会不会越晚越堵、开车还是公交更划算、要不要带伞或加外套。绝对不要说"现在就走/快跑/立刻出发"之类让他提前离岗的话，他只会到点才走。直接给结论，别客套、别复述数字。'
+        '你是"跑路准时宝"的播报助手。用户每天固定在指定下班时间走，不会早于这个时间离开工位。请根据"系统结论"、实时路况和今明天气，用一句话（40 字以内）口语化地告诉他：到点要不要准时走、会不会越晚越堵、开车还是公交更划算、要不要带伞或加外套。绝对不要说"现在就走/快跑/立刻出发"之类让他提前离岗的话，他只会到点才走。措辞要职业、适合给同事或上级看，不要出现“早退/翘班/摸鱼/旷工”等字眼，统一说“准时走/按点下班”。直接给结论，别客套、别复述数字。'
     },
     { role: 'user', content: buildAiPrompt(scan) }
   ];
