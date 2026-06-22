@@ -9,6 +9,8 @@ on:
 
 jobs:
   build:
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -42,6 +44,16 @@ jobs:
         with:
           name: offwork-radar-${{ matrix.os }}
           path: |
+            dist/*.exe
+            dist/*.dmg
+            dist/*.zip
+
+      # 打了 v 开头的 tag 时，把 exe / dmg 直接发布到 Release 页面，方便同事在网页上点下载
+      - name: Publish to Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
             dist/*.exe
             dist/*.dmg
             dist/*.zip
