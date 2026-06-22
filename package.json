@@ -1,7 +1,7 @@
 {
   "name": "offwork-radar",
-  "version": "0.1.0",
-  "description": "下班跑路雷达 - cross-platform desktop widget for commute and weather reminders.",
+  "version": "0.1.2",
+  "description": "跑路准时宝 - cross-platform desktop widget for commute and weather reminders.",
   "main": "src/main.js",
   "scripts": {
     "dev": "electron .",
@@ -26,7 +26,7 @@
   },
   "build": {
     "appId": "com.codex.offworkradar",
-    "productName": "下班跑路雷达",
+    "productName": "跑路准时宝",
     "directories": {
       "output": "dist"
     },

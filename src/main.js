@@ -43,7 +43,8 @@ function makeTemplate(partial = {}) {
     companyAddress: partial.companyAddress || '',
     homeAddress: partial.homeAddress || '',
     commuteModes: modes,
-    offworkTimes: times.length ? times : ['18:00']
+    offworkTimes: times.length ? times : ['18:00'],
+    morningDepart: partial.morningDepart || partial.workTime || '08:30'
   };
 }
 
@@ -124,7 +125,7 @@ function createWindow() {
     minHeight: 560,
     show: false,
     resizable: true,
-    title: '下班跑路雷达',
+    title: '跑路准时宝',
     backgroundColor: '#0c1014',
     icon: appIcon(),
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
@@ -153,7 +154,7 @@ function createTray() {
     icon = icon.resize({ width: 16, height: 16 });
   }
   tray = new Tray(icon);
-  tray.setToolTip('下班跑路雷达');
+  tray.setToolTip('跑路准时宝');
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: '打开', click: () => mainWindow?.show() },
     { label: '立即扫描', click: () => scanAndNotify(true) },
@@ -284,7 +285,8 @@ function buildScan(source, tpl, now, modes, tonight, tomorrow, weatherCity, rout
     reminder: {
       offworkTime: next.time,
       minutesToOffwork: next.minutesTo,
-      allTimes: tpl.offworkTimes
+      allTimes: tpl.offworkTimes,
+      morningDepart: tpl.morningDepart
     },
     route: route || null,
     hasMap: Boolean(lastRouteContext)
@@ -297,8 +299,8 @@ function buildMockScan(tpl) {
   const now = new Date();
   const rainy = now.getMinutes() % 2 === 0;
   const cold = now.getHours() % 2 === 0;
-  const tonight = { weather: rainy ? '小雨' : '多云', temp: cold ? '13' : '24' };
-  const tomorrow = { weather: rainy ? '阴' : '晴', temp: cold ? '12' : '20' };
+  const tonight = { weather: rainy ? '小雨' : '多云', temp: cold ? '13' : '24', wind: '东北风 3级', humidity: rainy ? '85%' : '55%' };
+  const tomorrow = { weather: rainy ? '阴' : '晴', temp: cold ? '12' : '20', wind: '北风 2级', humidity: '' };
   const modes = tpl.commuteModes.map((mode) => {
     const nowMinutes = (MODE_DEMO_BASE[mode] || 40) + (now.getMinutes() % 9);
     const laterMinutes = nowMinutes + 6 + (now.getMinutes() % 7);
@@ -366,16 +368,38 @@ async function route(origin, destination, mode, city, key) {
   return Math.max(1, Math.round(seconds / 60));
 }
 
+function windText(dir, power) {
+  if (!dir && !power) return '';
+  const d = !dir || dir === '无持续风向' ? '微风' : `${dir}风`;
+  const p = power && !/无|≤?0/.test(power) ? ` ${power}级` : '';
+  return d + p;
+}
+
 async function weatherForecast(adcode, key) {
-  const payload = await amapFetch('weather/weatherInfo', { city: adcode, extensions: 'all' }, key);
-  const forecast = payload.forecasts?.[0];
+  // all = 今明白天/夜间预报；base = 实况（含湿度、当前温度）
+  const [allRes, liveRes] = await Promise.all([
+    amapFetch('weather/weatherInfo', { city: adcode, extensions: 'all' }, key),
+    amapFetch('weather/weatherInfo', { city: adcode, extensions: 'base' }, key).catch(() => null)
+  ]);
+  const forecast = allRes.forecasts?.[0];
   const casts = forecast?.casts || [];
   const today = casts[0] || {};
   const tomo = casts[1] || casts[0] || {};
+  const live = liveRes?.lives?.[0] || {};
   return {
     city: forecast?.city || '',
-    tonight: { weather: today.nightweather || '未知', temp: today.nighttemp || '' },
-    tomorrow: { weather: tomo.dayweather || '未知', temp: tomo.daytemp || '' }
+    tonight: {
+      weather: today.nightweather || '未知',
+      temp: today.nighttemp || '',
+      wind: windText(today.nightwind, today.nightpower),
+      humidity: live.humidity ? `${live.humidity}%` : ''
+    },
+    tomorrow: {
+      weather: tomo.dayweather || '未知',
+      temp: tomo.daytemp || '',
+      wind: windText(tomo.daywind, tomo.daypower),
+      humidity: ''
+    }
   };
 }
 
@@ -528,7 +552,7 @@ async function aiSummary(settings, scan) {
     {
       role: 'system',
       content:
-        '你是"下班跑路雷达"的播报助手。用户每天固定在指定下班时间走，不会早于这个时间离开工位。请根据"系统结论"、实时路况和今明天气，用一句话（40 字以内）口语化地告诉他：到点要不要准时走、会不会越晚越堵、开车还是公交更划算、要不要带伞或加外套。绝对不要说"现在就走/快跑/立刻出发"之类让他提前离岗的话，他只会到点才走。直接给结论，别客套、别复述数字。'
+        '你是"跑路准时宝"的播报助手。用户每天固定在指定下班时间走，不会早于这个时间离开工位。请根据"系统结论"、实时路况和今明天气，用一句话（40 字以内）口语化地告诉他：到点要不要准时走、会不会越晚越堵、开车还是公交更划算、要不要带伞或加外套。绝对不要说"现在就走/快跑/立刻出发"之类让他提前离岗的话，他只会到点才走。直接给结论，别客套、别复述数字。'
     },
     { role: 'user', content: buildAiPrompt(scan) }
   ];
@@ -569,7 +593,7 @@ async function aiSummary(settings, scan) {
 function notify(scan, fromReminder = false) {
   if (Notification.isSupported()) {
     new Notification({
-      title: `跑路雷达 · ${scan.recommendText}`,
+      title: `跑路准时宝 · ${scan.recommendText}`,
       body: scan.aiSummary || `${scan.suggestion} ${scan.weather.action}`,
       icon: appIcon(),
       silent: false

@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>下班跑路雷达</title>
+    <title>跑路准时宝</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
@@ -27,7 +27,7 @@
           </span>
           <div class="brand-text">
             <p class="eyebrow">OFFWORK RADAR</p>
-            <h1>下班跑路雷达</h1>
+            <h1>跑路准时宝</h1>
           </div>
         </div>
         <button id="hideBtn" class="icon-btn" title="收起到托盘">收起</button>
@@ -85,11 +85,11 @@
           </div>
           <div class="weather-grid">
             <div class="weather-row">
-              <span class="weather-when">今晚下班</span>
+              <span id="tonightWhen" class="weather-when">今晚下班</span>
               <span id="tonightText" class="weather-val">--</span>
             </div>
             <div class="weather-row">
-              <span class="weather-when">明早上班</span>
+              <span id="morningWhen" class="weather-when">明早出门</span>
               <span id="tomorrowText" class="weather-val">--</span>
             </div>
           </div>
@@ -131,6 +131,11 @@
           <button id="addTimeBtn" class="add-time" type="button">+ 添加时间</button>
           <p class="hint">到设定的时间会准时弹通知；想早退就再加一个更早的时间当闹钟。</p>
         </div>
+
+        <label>
+          <span>出门通勤时间（早上几点出门，用于明早天气）</span>
+          <input id="morningDepart" type="time" />
+        </label>
 
         <label>
           <span>高德 Web 服务 Key</span>

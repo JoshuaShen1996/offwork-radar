@@ -22,7 +22,8 @@ const globalFields = {
 const tplFields = {
   name: $('tplName'),
   companyAddress: $('companyAddress'),
-  homeAddress: $('homeAddress')
+  homeAddress: $('homeAddress'),
+  morningDepart: $('morningDepart')
 };
 
 const ALL_MODES = ['driving', 'transit', 'bicycling', 'walking'];
@@ -188,6 +189,7 @@ function readForm() {
   tpl.homeAddress = tplFields.homeAddress.value.trim();
   tpl.commuteModes = readModes();
   tpl.offworkTimes = readTimes();
+  tpl.morningDepart = tplFields.morningDepart.value || '08:30';
 
   settings.amapKey = globalFields.amapKey.value.trim();
   settings.amapJsKey = globalFields.amapJsKey.value.trim();
@@ -208,6 +210,8 @@ function fillForm() {
   $('modeChecks').querySelectorAll('input').forEach((i) => {
     i.checked = modes.includes(i.value);
   });
+
+  tplFields.morningDepart.value = tpl.morningDepart || '08:30';
 
   $('timesList').innerHTML = '';
   (tpl.offworkTimes && tpl.offworkTimes.length ? tpl.offworkTimes : ['18:00']).forEach(addTimeRow);
@@ -232,38 +236,46 @@ function weatherText(w) {
   return `${w.weather} ${w.temp || '--'}°`;
 }
 
-function formatCountdown(mins) {
-  if (!Number.isFinite(mins)) return '';
-  if (mins < 0) return '已过';
-  if (mins < 60) return `还有 ${mins} 分钟`;
-  const h = Math.floor(mins / 60);
-  const m = mins % 60;
-  return `还有 ${h} 小时${m ? ` ${m} 分` : ''}`;
+function formatCountdown(sec) {
+  if (!Number.isFinite(sec)) return '--';
+  if (sec < 0) return '已过';
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+  if (h > 0) return `还有 ${h} 小时 ${m} 分 ${s} 秒`;
+  if (m > 0) return `还有 ${m} 分 ${s} 秒`;
+  return `还有 ${s} 秒`;
 }
 
-// 客户端实时算"下一个跑路点"，和主进程 nextOffwork 逻辑一致：优先今天还没到的最近一个，否则明天最早的
+// 客户端实时算"下一个跑路点"（精确到秒）：优先今天还没到的最近一个，否则明天最早的
 function nextOffworkClient(times) {
   const now = new Date();
-  const nowMin = now.getHours() * 60 + now.getMinutes();
   const valid = (times && times.length ? times : ['18:00']).filter(Boolean);
-  const parsed = valid.map((t) => {
+  const cands = valid.map((t) => {
     const [h, m] = t.split(':').map(Number);
-    return { time: t, tod: (h || 0) * 60 + (m || 0) };
+    const at = new Date(now);
+    at.setHours(h || 0, m || 0, 0, 0);
+    return { time: t, tod: (h || 0) * 60 + (m || 0), secTo: Math.round((at - now) / 1000) };
   });
-  const upcoming = parsed.filter((p) => p.tod - nowMin >= -1).sort((a, b) => a.tod - b.tod);
-  if (upcoming.length) return { time: upcoming[0].time, minutesTo: upcoming[0].tod - nowMin };
-  const earliest = parsed.slice().sort((a, b) => a.tod - b.tod)[0];
-  return { time: earliest.time, minutesTo: earliest.tod + 24 * 60 - nowMin };
+  const upcoming = cands.filter((c) => c.secTo >= -60).sort((a, b) => a.secTo - b.secTo);
+  if (upcoming.length) return { time: upcoming[0].time, secTo: upcoming[0].secTo };
+  const earliest = cands.slice().sort((a, b) => a.tod - b.tod)[0];
+  return { time: earliest.time, secTo: earliest.secTo + 24 * 3600 };
 }
 
-// 每 15 秒刷新倒计时；"下一个跑路点"翻篇时自动重扫一遍刷新整张卡
-function tickClock() {
-  if (!settings) return;
+function updateCountdown() {
+  if (!settings) return null;
   const tpl = activeTemplate();
   const next = nextOffworkClient(tpl.offworkTimes);
   $('nextOffwork').textContent = next.time;
-  $('countdown').textContent = `跑路倒计时 · ${formatCountdown(next.minutesTo)}`;
-  if (lastScan && lastScan.reminder && next.time !== lastScan.reminder.offworkTime && !rolloverPending) {
+  $('countdown').textContent = `跑路倒计时 · ${formatCountdown(next.secTo)}`;
+  return next;
+}
+
+// 每秒刷新倒计时；"下一个跑路点"翻篇时自动重扫一遍刷新整张卡
+function tickClock() {
+  const next = updateCountdown();
+  if (next && lastScan && lastScan.reminder && next.time !== lastScan.reminder.offworkTime && !rolloverPending) {
     rolloverPending = true;
     runScan().finally(() => {
       rolloverPending = false;
@@ -279,9 +291,7 @@ function renderScan(scan) {
 
   $('riskLabel').textContent = RISK_LABEL[scan.risk] || '待扫描';
   $('sourceTag').textContent = scan.source === 'amap' ? '实时接口' : '演示数据';
-  const mins = scan.reminder?.minutesToOffwork;
-  $('nextOffwork').textContent = scan.reminder?.offworkTime || '--';
-  $('countdown').textContent = `跑路倒计时 · ${Number.isFinite(mins) ? formatCountdown(mins) : '--'}`;
+  updateCountdown();
   $('recommendText').textContent = scan.recommendText || '--';
   $('headline').textContent = scan.headline || '';
   $('suggestion').textContent = scan.suggestion || '';
@@ -292,6 +302,9 @@ function renderScan(scan) {
   const trendEl = $('trendTag');
   trendEl.textContent = tParts.length ? `· ${tParts.join(' · ')}` : '';
   trendEl.title = scan.traffic?.detail || '';
+
+  const modeList = (scan.modes || []).map((m) => m.mode);
+  if (!currentMapMode || !modeList.includes(currentMapMode)) currentMapMode = modeList[0] || 'driving';
 
   renderModes(scan);
   renderWeather(scan);
@@ -307,22 +320,46 @@ function renderModes(scan) {
   if (!modes.length) return;
   const fastest = Math.min(...modes.map((m) => m.nowMinutes));
   modes.forEach((m) => {
+    const isBest = m.nowMinutes === fastest && modes.length > 1;
+    const isSel = m.mode === currentMapMode;
     const card = document.createElement('div');
-    card.className = 'mode-card' + (m.nowMinutes === fastest && modes.length > 1 ? ' best' : '');
+    card.className = 'mode-card' + (isBest ? ' best' : '') + (isSel ? ' selected' : '');
+    card.title = '点击在地图上看这条路线';
     card.innerHTML = `
       <span class="mc-name">${MODE_LABEL[m.mode] || m.mode}</span>
       <strong class="mc-now">${m.nowMinutes} 分</strong>
       <span class="mc-later">晚 30 分 ${m.laterMinutes} 分</span>
-      ${m.nowMinutes === fastest && modes.length > 1 ? '<span class="mc-flag">最快</span>' : ''}`;
+      ${isBest ? '<span class="mc-flag">最快</span>' : ''}`;
+    card.addEventListener('click', () => selectMapMode(m.mode));
     row.appendChild(card);
   });
 }
 
-/* ---------- 天气：带伞 / 加外套 醒目提示 ---------- */
+// 点通勤卡 / 地图 tab 都走这里：切换地图路线 + 同步高亮
+function selectMapMode(mode) {
+  currentMapMode = mode;
+  if (lastRoute && settings.amapJsKey) {
+    renderMapTabs(lastRoute.modes || [mode]);
+    renderInteractiveMap(lastRoute, mode).catch(() => {});
+  }
+  if (lastScan) renderModes(lastScan);
+}
+
+/* ---------- 天气：带伞 / 加外套 醒目提示 + 风/湿度 ---------- */
+function weatherLine(x) {
+  if (!x || !x.weather) return '--';
+  const parts = [`${x.weather} ${x.temp || '--'}°`];
+  if (x.wind) parts.push(x.wind);
+  if (x.humidity) parts.push(`湿度 ${x.humidity}`);
+  return parts.join(' · ');
+}
+
 function renderWeather(scan) {
   const w = scan.weather || {};
-  $('tonightText').textContent = weatherText(w.tonight);
-  $('tomorrowText').textContent = weatherText(w.tomorrow);
+  const md = scan.reminder?.morningDepart;
+  $('morningWhen').textContent = md ? `明早出门 ${md}` : '明早出门';
+  $('tonightText').textContent = weatherLine(w.tonight);
+  $('tomorrowText').textContent = weatherLine(w.tomorrow);
   $('umbrellaBadge').hidden = !w.umbrella;
   $('coatBadge').hidden = !w.coat;
   $('weatherOk').hidden = Boolean(w.umbrella || w.coat);
@@ -404,11 +441,7 @@ function renderMapTabs(modes) {
     b.type = 'button';
     b.className = 'map-tab' + (mode === currentMapMode ? ' active' : '');
     b.textContent = MODE_LABEL[mode] || mode;
-    b.addEventListener('click', () => {
-      currentMapMode = mode;
-      renderMapTabs(modes);
-      if (lastRoute) renderInteractiveMap(lastRoute, mode).catch(() => {});
-    });
+    b.addEventListener('click', () => selectMapMode(mode));
     tabs.appendChild(b);
   });
 }
@@ -441,6 +474,7 @@ function markerDot(color, label) {
 let amapMap = null;
 let amapRoute = null;
 let amapMarkers = [];
+let amapMapKey = null;
 async function renderInteractiveMap(route, mode) {
   const AMap = await ensureAmap();
   const useMode = mode || (route.modes && route.modes[0]) || 'driving';
@@ -448,9 +482,18 @@ async function renderInteractiveMap(route, mode) {
   const [dlng, dlat] = String(route.destination).split(',').map(Number);
   if (![olng, olat, dlng, dlat].every(Number.isFinite)) throw new Error('坐标无效');
 
+  // 起终点变了（改了地址）就销毁旧地图重建，避免残留上一个地址的标记/路线
+  const mapKey = `${route.origin}|${route.destination}`;
+  if (amapMap && amapMapKey !== mapKey) {
+    amapMap.destroy();
+    amapMap = null;
+    amapRoute = null;
+    amapMarkers = [];
+  }
   if (!amapMap) {
     amapMap = new AMap.Map('mapInteractive', { zoom: 12, center: [olng, olat], viewMode: '2D' });
     amapMap.add(new AMap.TileLayer.Traffic({ autoRefresh: true, interval: 180 }));
+    amapMapKey = mapKey;
   }
 
   // 清旧路线、标记、详情面板
@@ -556,12 +599,13 @@ async function init() {
     };
     settings.templates.push(copy);
     settings.activeId = copy.id;
+    $('settingsForm').hidden = true;
     await persist('已另存为新模板。');
   });
 
   api.onScanUpdate(renderScan);
   runScan();
-  setInterval(tickClock, 15000);
+  setInterval(tickClock, 1000);
 }
 
 init().catch((error) => setMessage(error.message || '初始化失败'));
