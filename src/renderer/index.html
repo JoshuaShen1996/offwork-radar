@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>下班跑路雷达</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app">
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 48 48" width="34" height="34">
+              <circle cx="24" cy="24" r="22" fill="#0e1a24" stroke="rgba(70,209,138,.25)" />
+              <circle cx="24" cy="24" r="15" fill="none" stroke="rgba(70,209,138,.4)" stroke-width="1.4" />
+              <circle cx="24" cy="24" r="8" fill="none" stroke="rgba(70,209,138,.55)" stroke-width="1.4" />
+              <path class="brand-sweep" d="M24 24 L24 4 A20 20 0 0 1 41 14 Z" fill="url(#g)" />
+              <circle cx="33" cy="15" r="2.4" fill="#82f0b4" />
+              <defs>
+                <linearGradient id="g" x1="24" y1="24" x2="40" y2="8" gradientUnits="userSpaceOnUse">
+                  <stop offset="0" stop-color="#64b5ff" stop-opacity="0" />
+                  <stop offset="1" stop-color="#64b5ff" stop-opacity=".55" />
+                </linearGradient>
+              </defs>
+            </svg>
+          </span>
+          <div class="brand-text">
+            <p class="eyebrow">OFFWORK RADAR</p>
+            <h1>下班跑路雷达</h1>
+          </div>
+        </div>
+        <button id="hideBtn" class="icon-btn" title="收起到托盘">收起</button>
+      </header>
+
+      <p class="tagline">到下班点提醒你：现在走，还是再等等。</p>
+
+      <div id="templateChips" class="template-chips"></div>
+
+      <section id="radarCard" class="radar-card state-idle">
+        <div class="card-top">
+          <span class="status">
+            <span id="riskDot" class="risk-dot"></span>
+            <span id="riskLabel" class="risk-label">待扫描</span>
+          </span>
+          <span id="sourceTag" class="source-tag">未扫描</span>
+        </div>
+
+        <div id="aiBox" class="ai-box" hidden>
+          <span class="ai-tag">AI</span>
+          <p id="aiSummary"></p>
+        </div>
+
+        <div class="advice">
+          <p class="advice-label">下一个跑路点 <span id="nextOffwork">--</span></p>
+          <p id="countdown" class="countdown-label">跑路倒计时 · --</p>
+          <div class="depart"><strong id="recommendText">先扫一眼</strong></div>
+          <h2 id="headline">设置地址后，提前 15 分钟提醒你该不该走。</h2>
+          <p id="suggestion">支持多个跑路时间、模板、今明天气。未配高德 Key 时用演示数据。</p>
+        </div>
+
+        <div class="route">
+          <span class="route-line">公司 <span class="arrow">→</span> 家</span>
+          <span id="trendTag" class="trend-tag"></span>
+        </div>
+
+        <div id="mapTabs" class="map-tabs" hidden></div>
+
+        <div id="mapWrap" class="map-wrap">
+          <div id="mapInteractive" class="map-interactive" hidden></div>
+          <img id="mapImg" alt="通勤实时路况" />
+          <button id="mapZoom" class="map-zoom" type="button">高德打开 ↗</button>
+          <div id="mapEmpty" class="map-empty">配置高德 Key 后，这里显示通勤实时路况地图</div>
+        </div>
+
+        <div id="mapPanel" class="map-panel" hidden></div>
+
+        <div id="modesRow" class="modes-row"></div>
+
+        <div class="weather">
+          <div id="weatherCallout" class="weather-callout">
+            <span id="umbrellaBadge" class="callout-pill pill-rain" hidden>☂ 记得带伞</span>
+            <span id="coatBadge" class="callout-pill pill-cold" hidden>🧥 加件外套</span>
+            <span id="weatherOk" class="callout-ok" hidden>✓ 穿着随意，不用带伞</span>
+          </div>
+          <div class="weather-grid">
+            <div class="weather-row">
+              <span class="weather-when">今晚下班</span>
+              <span id="tonightText" class="weather-val">--</span>
+            </div>
+            <div class="weather-row">
+              <span class="weather-when">明早上班</span>
+              <span id="tomorrowText" class="weather-val">--</span>
+            </div>
+          </div>
+          <p id="weatherAction" class="weather-action">今晚是未知世界，先扫一眼。</p>
+        </div>
+      </section>
+
+      <section class="controls">
+        <button id="scanBtn" class="primary">立即扫描</button>
+        <button id="settingsToggle" class="secondary">设置</button>
+      </section>
+
+      <form id="settingsForm" class="settings" hidden>
+        <label>
+          <span>模板名称</span>
+          <input id="tplName" placeholder="例如：工作日 / 加班日" />
+        </label>
+        <label>
+          <span>公司地址</span>
+          <input id="companyAddress" placeholder="例如：上海市长宁区..." />
+        </label>
+        <label>
+          <span>回家地址</span>
+          <input id="homeAddress" placeholder="例如：上海市浦东新区..." />
+        </label>
+        <div class="field">
+          <span class="field-label">通勤方式（可多选，并列对比，帮你决定开不开车）</span>
+          <div id="modeChecks" class="mode-checks">
+            <label class="mode-check"><input type="checkbox" value="driving" /><span>驾车/打车</span></label>
+            <label class="mode-check"><input type="checkbox" value="transit" /><span>公交地铁</span></label>
+            <label class="mode-check"><input type="checkbox" value="bicycling" /><span>骑行</span></label>
+            <label class="mode-check"><input type="checkbox" value="walking" /><span>步行</span></label>
+          </div>
+        </div>
+
+        <div class="field">
+          <span class="field-label">下班 / 提醒时间（到点提醒你看路况，可多个）</span>
+          <div id="timesList" class="times-list"></div>
+          <button id="addTimeBtn" class="add-time" type="button">+ 添加时间</button>
+          <p class="hint">到设定的时间会准时弹通知；想早退就再加一个更早的时间当闹钟。</p>
+        </div>
+
+        <label>
+          <span>高德 Web 服务 Key</span>
+          <input id="amapKey" type="password" placeholder="不填则使用演示数据" />
+        </label>
+
+        <details class="advanced">
+          <summary>可交互地图（高德 JS API，可选）</summary>
+          <div class="advanced-body">
+            <label>
+              <span>JS API Key（Web端）</span>
+              <input id="amapJsKey" type="password" placeholder="填了才显示可交互地图" />
+            </label>
+            <label>
+              <span>安全密钥 securityJsCode</span>
+              <input id="amapSecurityCode" type="password" placeholder="创建 JS Key 时一起拿到" />
+            </label>
+            <p class="hint">在高德控制台创建「Web端(JS API)」Key，域名白名单留空；不填则用静态地图。</p>
+          </div>
+        </details>
+
+        <details class="advanced">
+          <summary>AI 一句话决策（可选）</summary>
+          <div class="advanced-body">
+            <label>
+              <span>接口地址 Base URL</span>
+              <input id="aiBaseUrl" placeholder="默认 https://api.openai.com/v1" />
+            </label>
+            <div class="grid">
+              <label>
+                <span>模型名</span>
+                <input id="aiModel" placeholder="如 gpt-4o-mini" />
+              </label>
+              <label>
+                <span>API Key</span>
+                <input id="aiKey" type="password" placeholder="留空则用规则文案" />
+              </label>
+            </div>
+            <p class="hint">兼容 OpenAI 接口，可指向公司内部模型。</p>
+          </div>
+        </details>
+
+        <label class="check-row">
+          <input id="notificationsEnabled" type="checkbox" />
+          <span>开启下班前系统通知</span>
+        </label>
+
+        <div class="form-actions">
+          <button class="primary" type="submit">保存到当前模板</button>
+          <button id="saveAsBtn" class="secondary" type="button">另存为新模板</button>
+        </div>
+      </form>
+
+      <p id="message" class="message"></p>
+    </main>
+
+    <script src="./renderer.js"></script>
+  </body>
+</html>
