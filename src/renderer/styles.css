@@ -431,16 +431,14 @@ h2 {
   display: none;
 }
 
-/* 路线详情面板：高德插件注入浅色 HTML（换乘站、各段用时、步骤），给它一个浅底容器 */
+/* 路线面板：自定义紧凑版，默认只显示首选线路一行，步骤折叠 */
 .map-panel {
   margin-top: 8px;
-  max-height: 220px;
+  max-height: 240px;
   overflow: auto;
   border: 1px solid var(--line);
   border-radius: 12px;
-  background: #eef2f6;
-  color: #1c2430;
-  font-size: 12px;
+  background: var(--panel-strong);
 }
 
 .map-panel[hidden],
@@ -448,9 +446,30 @@ h2 {
   display: none;
 }
 
-.map-panel .amap-lib-driving,
-.map-panel .amap-lib-transfer {
-  background: transparent;
+.route-summary {
+  padding: 11px 13px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.route-steps > summary {
+  padding: 9px 13px;
+  border-top: 1px solid var(--line);
+  color: var(--blue);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.route-steps ol {
+  margin: 0;
+  padding: 6px 13px 12px 30px;
+}
+
+.route-steps li {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.8;
 }
 
 .metrics {

@@ -207,7 +207,7 @@ function nextOffwork(times, now = new Date()) {
 
 function classifyRisk(primary, weatherText, trend, traffic) {
   const badWeather = /雨|雪|雷|雾|沙|霾|冰雹/.test(String(weatherText || ''));
-  const delta = primary.laterMinutes - primary.nowMinutes;
+  const delta = primary.offworkMinutes - primary.nowMinutes;
   const worseThanUsual = trend && trend.enough && trend.deltaVsUsual >= 8;
   const heavyTraffic = traffic && traffic.status >= 3; // 拥堵 / 严重拥堵
   const someTraffic = traffic && traffic.status === 2; // 缓行
@@ -233,27 +233,27 @@ function weatherAdvice(tonight, tomorrow) {
 }
 
 // 统一决策文案：以「下班/提醒时间」为基准，不建议早于下班点走；偶尔早退靠多设一个更早的时间
-function decide(refTime, risk, nowMinutes, laterMinutes) {
-  const delta = Math.max(0, laterMinutes - nowMinutes);
+function decide(refTime, risk, nowMinutes, offworkMinutes) {
+  const delta = Math.max(0, offworkMinutes - nowMinutes);
 
   if (risk === 'good') {
     return {
       recommendText: `${refTime} 准点走`,
       headline: '到点走就行，不急也能再等等',
-      suggestion: `现在回家约 ${nowMinutes} 分钟，晚 30 分钟也才多花 ${delta} 分，路况稳。`
+      suggestion: `${refTime} 出发预计 ${offworkMinutes} 分到家，路况稳。`
     };
   }
   if (risk === 'warning') {
     return {
       recommendText: `${refTime} 一到就走`,
       headline: '到点别拖，越晚越堵',
-      suggestion: `现在约 ${nowMinutes} 分钟，晚 30 分钟要多花 ${delta} 分。`
+      suggestion: `${refTime} 出发预计 ${offworkMinutes} 分，比现在多约 ${delta} 分。`
     };
   }
   return {
     recommendText: `${refTime} 立刻走`,
     headline: '到点马上走，今天值得就早退',
-    suggestion: `现在约 ${nowMinutes} 分钟，晚 30 分钟可能到 ${laterMinutes} 分，雨和堵会叠加。`
+    suggestion: `${refTime} 出发预计 ${offworkMinutes} 分，雨和堵会叠加，越晚越糟。`
   };
 }
 
@@ -262,7 +262,7 @@ function buildScan(source, tpl, now, modes, tonight, tomorrow, weatherCity, rout
   const advice = weatherAdvice(tonight, tomorrow);
   const primary = modes[0];
   const risk = classifyRisk(primary, tonight.weather, trend, traffic);
-  const d = decide(next.time, risk, primary.nowMinutes, primary.laterMinutes);
+  const d = decide(next.time, risk, primary.nowMinutes, primary.offworkMinutes);
 
   return {
     source,
@@ -289,7 +289,8 @@ function buildScan(source, tpl, now, modes, tonight, tomorrow, weatherCity, rout
       offworkTime: next.time,
       minutesToOffwork: next.minutesTo,
       allTimes: tpl.offworkTimes,
-      morningDepart: tpl.morningDepart
+      morningDepart: tpl.morningDepart,
+      eveningTime: (tpl.offworkTimes && tpl.offworkTimes.length ? tpl.offworkTimes.slice().sort().slice(-1)[0] : next.time)
     },
     route: route || null,
     hasMap: Boolean(lastRouteContext)
@@ -306,8 +307,9 @@ function buildMockScan(tpl) {
   const tomorrow = { weather: rainy ? '阴' : '晴', temp: cold ? '12' : '20', feelsLike: cold ? '10' : '21', pop: rainy ? '40' : '5', wind: '北风 2级', humidity: '' };
   const modes = tpl.commuteModes.map((mode) => {
     const nowMinutes = (MODE_DEMO_BASE[mode] || 40) + (now.getMinutes() % 9);
-    const laterMinutes = nowMinutes + 6 + (now.getMinutes() % 7);
-    return { mode, nowMinutes, laterMinutes, deltaMinutes: laterMinutes - nowMinutes };
+    const f = mode === 'driving' ? 1.18 : mode === 'transit' ? 1.06 : 1;
+    const offworkMinutes = Math.round(nowMinutes * f) + (f > 1 ? now.getMinutes() % 4 : 0);
+    return { mode, nowMinutes, offworkMinutes, predictSource: 'estimate', deltaMinutes: offworkMinutes - nowMinutes };
   });
   const baseline = modes[0].nowMinutes - 5;
   const trend = { enough: true, baselineMinutes: baseline, deltaVsUsual: 5, label: '比平时慢约 5 分（演示数据）' };
@@ -523,6 +525,25 @@ function computeTrend(now, mode, nowMinutes) {
   return { enough: true, baselineMinutes: avg, deltaVsUsual: delta, label };
 }
 
+// 预测某通勤方式在「下班点时段」的耗时：优先本地历史同时段均值，数据不足回退系数估算
+function predictAtTime(mode, targetMin, nowMinutes, now) {
+  const today = now.toDateString();
+  const samples = (history || []).filter(
+    (h) => h.mode === mode && h.day !== today && Math.abs(h.minOfDay - targetMin) <= 40
+  );
+  if (samples.length >= 2) {
+    const avg = Math.round(samples.reduce((s, h) => s + h.minutes, 0) / samples.length);
+    return { minutes: avg, source: 'history' };
+  }
+  const targetHour = Math.floor(targetMin / 60);
+  const rush = targetHour >= 17 && targetHour <= 19;
+  // 只有受路况影响的方式才加系数：驾车最明显，公交（含部分地面公交）小幅，骑行/步行不受堵车影响
+  let factor = 1;
+  if (mode === 'driving') factor = rush ? 1.18 : 1.08;
+  else if (mode === 'transit') factor = rush ? 1.08 : 1.03;
+  return { minutes: Math.round(nowMinutes * factor), source: 'estimate' };
+}
+
 async function scanCommute(settings) {
   const tpl = activeTemplate(settings);
   if (!settings.amapKey || !tpl.companyAddress || !tpl.homeAddress) {
@@ -539,20 +560,23 @@ async function scanCommute(settings) {
   const origin = originGeo.location;
   const destination = destinationGeo.location;
   const city = originGeo.citycode || originGeo.adcode;
-  const rushHourFactor = now.getHours() >= 17 && now.getHours() <= 19 ? 1.18 : 1.08;
+  const next = nextOffwork(tpl.offworkTimes, now);
+  const targetMin = minOfDay(parseTimeToDate(next.time, now));
+  await loadHistory();
 
-  // 每个选中的出行方式各算一遍耗时，外加今明天气 + 公司周边实时交通态势，一起并发
-  const [modeResults, wx, traffic] = await Promise.all([
-    Promise.all(
-      tpl.commuteModes.map(async (mode) => {
-        const nowMinutes = await route(origin, destination, mode, city, settings.amapKey);
-        const laterMinutes = Math.round(nowMinutes * rushHourFactor);
-        return { mode, nowMinutes, laterMinutes, deltaMinutes: laterMinutes - nowMinutes };
-      })
-    ),
+  // 各方式当前耗时 + 今明天气 + 公司周边实时交通态势，一起并发
+  const [routeMins, wx, traffic] = await Promise.all([
+    Promise.all(tpl.commuteModes.map((mode) => route(origin, destination, mode, city, settings.amapKey))),
     getWeather(settings, originGeo, tpl, now),
     trafficStatus(origin, settings.amapKey)
   ]);
+
+  // 每个方式预测「下班点」耗时（本地历史同时段 → 系数估算回退）
+  const modeResults = tpl.commuteModes.map((mode, i) => {
+    const nowMinutes = routeMins[i];
+    const pred = predictAtTime(mode, targetMin, nowMinutes, now);
+    return { mode, nowMinutes, offworkMinutes: pred.minutes, predictSource: pred.source, deltaMinutes: pred.minutes - nowMinutes };
+  });
 
   lastRouteContext = {
     origin,
@@ -562,7 +586,6 @@ async function scanCommute(settings) {
     mode: tpl.commuteModes[0]
   };
 
-  await loadHistory();
   const trend = computeTrend(now, modeResults[0].mode, modeResults[0].nowMinutes);
   for (const m of modeResults) {
     history.push({ day: now.toDateString(), minOfDay: minOfDay(now), mode: m.mode, minutes: m.nowMinutes });
@@ -605,7 +628,7 @@ function weatherPromptLine(x) {
 // AI 一句话决策：把接口数据翻译成人话。OpenAI 兼容接口，可指向公司内部模型。
 function buildAiPrompt(scan) {
   const modeLine = scan.modes
-    .map((m) => `${modeLabel(m.mode)}到家约 ${m.nowMinutes} 分（再拖半小时约 ${m.laterMinutes} 分）`)
+    .map((m) => `${modeLabel(m.mode)}现在约 ${m.nowMinutes} 分、${scan.reminder.offworkTime}出发预计 ${m.offworkMinutes} 分`)
     .join('；');
   return [
     `用户固定 ${scan.reminder.offworkTime} 下班、到点才走，不会提前离开工位。`,

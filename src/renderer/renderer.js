@@ -324,9 +324,11 @@ function renderModes(scan) {
   row.innerHTML = '';
   const modes = scan.modes || (scan.commute ? [scan.commute] : []);
   if (!modes.length) return;
-  const fastest = Math.min(...modes.map((m) => m.nowMinutes));
+  const ot = scan.reminder?.offworkTime || '下班点';
+  const fastest = Math.min(...modes.map((m) => (m.offworkMinutes != null ? m.offworkMinutes : m.nowMinutes)));
   modes.forEach((m) => {
-    const isBest = m.nowMinutes === fastest && modes.length > 1;
+    const offwork = m.offworkMinutes != null ? m.offworkMinutes : m.nowMinutes;
+    const isBest = offwork === fastest && modes.length > 1;
     const isSel = m.mode === currentMapMode;
     const card = document.createElement('div');
     card.className = 'mode-card' + (isBest ? ' best' : '') + (isSel ? ' selected' : '');
@@ -334,7 +336,7 @@ function renderModes(scan) {
     card.innerHTML = `
       <span class="mc-name">${MODE_LABEL[m.mode] || m.mode}</span>
       <strong class="mc-now">${m.nowMinutes} 分</strong>
-      <span class="mc-later">晚 30 分 ${m.laterMinutes} 分</span>
+      <span class="mc-later">${ot} 预计 ${offwork} 分${m.predictSource === 'estimate' ? '（估算）' : ''}</span>
       ${isBest ? '<span class="mc-flag">最快</span>' : ''}`;
     card.addEventListener('click', () => selectMapMode(m.mode));
     row.appendChild(card);
@@ -364,6 +366,8 @@ function weatherLine(x) {
 
 function renderWeather(scan) {
   const w = scan.weather || {};
+  const ev = scan.reminder?.eveningTime;
+  $('tonightWhen').textContent = ev ? `今晚下班 ${ev}` : '今晚下班';
   const md = scan.reminder?.morningDepart;
   $('morningWhen').textContent = md ? `明早出门 ${md}` : '明早出门';
   $('tonightText').textContent = weatherLine(w.tonight);
@@ -479,6 +483,51 @@ function markerDot(color, label) {
   return `<div style="width:22px;height:22px;line-height:22px;border-radius:50%;background:${color};color:#06121f;font-size:11px;font-weight:700;text-align:center;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.45)">${label}</div>`;
 }
 
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+}
+
+function transitSegText(seg) {
+  if (!seg) return '';
+  if (seg.transit_mode === 'WALK') {
+    const d = (seg.walking && seg.walking.distance) || seg.distance;
+    return `步行${d ? ` ${Math.round(d)} 米` : ''}`;
+  }
+  const t = seg.transit;
+  const line = t && t.lines && t.lines[0] ? t.lines[0].name : '';
+  if (line) {
+    const on = t.on_station ? t.on_station.name : '';
+    const off = t.off_station ? t.off_station.name : '';
+    return `乘 ${line}，${on} → ${off}`;
+  }
+  return seg.instruction || '';
+}
+
+// 自定义紧凑路线面板：默认只显示首选线路一行，详细步骤折叠
+function buildRoutePanel(mode, result) {
+  const panel = $('mapPanel');
+  let summary = '';
+  let steps = [];
+  if (mode === 'transit' && result.plans && result.plans[0]) {
+    const p = result.plans[0];
+    const km = p.distance ? ` · ${(p.distance / 1000).toFixed(1)} 公里` : '';
+    summary = `${MODE_LABEL.transit} · 约 ${Math.round((p.time || 0) / 60)} 分钟${km}`;
+    steps = (p.segments || []).map(transitSegText).filter(Boolean);
+  } else if (result.routes && result.routes[0]) {
+    const r = result.routes[0];
+    summary = `${MODE_LABEL[mode] || mode} · 约 ${Math.round((r.time || 0) / 60)} 分钟 · ${(r.distance / 1000).toFixed(1)} 公里${r.policy ? ` · ${r.policy}` : ''}`;
+    steps = (r.steps || []).map((s) => s.instruction).filter(Boolean);
+  } else {
+    panel.hidden = true;
+    return;
+  }
+  const stepsHtml = steps.length
+    ? `<details class="route-steps"><summary>展开 ${steps.length} 步详细路线</summary><ol>${steps.map((s) => `<li>${escapeHtml(s)}</li>`).join('')}</ol></details>`
+    : '';
+  panel.innerHTML = `<div class="route-summary">${escapeHtml(summary)}</div>${stepsHtml}`;
+  panel.hidden = false;
+}
+
 let amapMap = null;
 let amapRoute = null;
 let amapMarkers = [];
@@ -515,30 +564,17 @@ async function renderInteractiveMap(route, mode) {
   panel.innerHTML = '';
   panel.hidden = true;
 
-  // 驾车/公交用高德路线插件：画线 + 起终点/换乘站标记 + 详情面板（换乘站、各段用时、步骤）
+  // 驾车/公交：画线 + 标记，但面板用自定义紧凑版（默认只显示首选线路一行，步骤折叠）
   if (useMode === 'driving' || useMode === 'transit') {
     try {
-      panel.hidden = false;
       if (useMode === 'transit') {
-        amapRoute = new AMap.Transfer({
-          map: amapMap,
-          panel: 'mapPanel',
-          hideMarkers: false,
-          autoFitView: true,
-          city: route.city || '全国',
-          cityd: route.city || '全国'
-        });
+        amapRoute = new AMap.Transfer({ map: amapMap, hideMarkers: false, autoFitView: true, city: route.city || '全国', cityd: route.city || '全国' });
       } else {
-        amapRoute = new AMap.Driving({
-          map: amapMap,
-          panel: 'mapPanel',
-          showTraffic: true,
-          hideMarkers: false,
-          autoFitView: true
-        });
+        amapRoute = new AMap.Driving({ map: amapMap, showTraffic: true, hideMarkers: false, autoFitView: true });
       }
-      amapRoute.search([olng, olat], [dlng, dlat], (status) => {
-        if (status !== 'complete') panel.hidden = true;
+      amapRoute.search([olng, olat], [dlng, dlat], (status, result) => {
+        if (status === 'complete') buildRoutePanel(useMode, result);
+        else panel.hidden = true;
       });
     } catch {
       panel.hidden = true;
