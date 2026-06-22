@@ -13,6 +13,8 @@ const globalFields = {
   amapKey: $('amapKey'),
   amapJsKey: $('amapJsKey'),
   amapSecurityCode: $('amapSecurityCode'),
+  qweatherKey: $('qweatherKey'),
+  qweatherHost: $('qweatherHost'),
   aiBaseUrl: $('aiBaseUrl'),
   aiModel: $('aiModel'),
   aiKey: $('aiKey'),
@@ -194,6 +196,8 @@ function readForm() {
   settings.amapKey = globalFields.amapKey.value.trim();
   settings.amapJsKey = globalFields.amapJsKey.value.trim();
   settings.amapSecurityCode = globalFields.amapSecurityCode.value.trim();
+  settings.qweatherKey = globalFields.qweatherKey.value.trim();
+  settings.qweatherHost = globalFields.qweatherHost.value.trim();
   settings.aiBaseUrl = globalFields.aiBaseUrl.value.trim();
   settings.aiModel = globalFields.aiModel.value.trim();
   settings.aiKey = globalFields.aiKey.value.trim();
@@ -219,6 +223,8 @@ function fillForm() {
   globalFields.amapKey.value = settings.amapKey || '';
   globalFields.amapJsKey.value = settings.amapJsKey || '';
   globalFields.amapSecurityCode.value = settings.amapSecurityCode || '';
+  globalFields.qweatherKey.value = settings.qweatherKey || '';
+  globalFields.qweatherHost.value = settings.qweatherHost || '';
   globalFields.aiBaseUrl.value = settings.aiBaseUrl || '';
   globalFields.aiModel.value = settings.aiModel || '';
   globalFields.aiKey.value = settings.aiKey || '';
@@ -349,6 +355,8 @@ function selectMapMode(mode) {
 function weatherLine(x) {
   if (!x || !x.weather) return '--';
   const parts = [`${x.weather} ${x.temp || '--'}°`];
+  if (x.feelsLike && x.feelsLike !== x.temp) parts.push(`体感 ${x.feelsLike}°`);
+  if (x.pop) parts.push(`降水 ${x.pop}%`);
   if (x.wind) parts.push(x.wind);
   if (x.humidity) parts.push(`湿度 ${x.humidity}`);
   return parts.join(' · ');

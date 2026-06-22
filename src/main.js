@@ -52,6 +52,8 @@ const GLOBAL_DEFAULTS = {
   amapKey: process.env.AMAP_KEY || '',
   amapJsKey: process.env.AMAP_JS_KEY || '',
   amapSecurityCode: process.env.AMAP_SECURITY_CODE || '',
+  qweatherKey: process.env.QWEATHER_KEY || '',
+  qweatherHost: process.env.QWEATHER_HOST || '',
   notificationsEnabled: true,
   aiKey: process.env.AI_KEY || process.env.OPENAI_API_KEY || '',
   aiBaseUrl: process.env.AI_BASE_URL || '',
@@ -218,8 +220,9 @@ function classifyRisk(primary, weatherText, trend, traffic) {
 // 今晚下班 + 明早上班，转成「带伞 / 加外套」的动作建议
 function weatherAdvice(tonight, tomorrow) {
   const rain = /雨|雪|雷|冰雹/;
-  const umbrella = rain.test(tonight.weather) || rain.test(tomorrow.weather);
-  const temps = [Number(tonight.temp), Number(tomorrow.temp)].filter(Number.isFinite);
+  const popHigh = (x) => x && Number(x.pop) >= 50; // 降水概率 ≥ 50% 也提示带伞
+  const umbrella = rain.test(tonight.weather) || rain.test(tomorrow.weather) || popHigh(tonight) || popHigh(tomorrow);
+  const temps = [Number(tonight.feelsLike || tonight.temp), Number(tomorrow.feelsLike || tomorrow.temp)].filter(Number.isFinite);
   const minTemp = temps.length ? Math.min(...temps) : null;
   const coat = minTemp != null && minTemp <= 15;
   const parts = [];
@@ -299,8 +302,8 @@ function buildMockScan(tpl) {
   const now = new Date();
   const rainy = now.getMinutes() % 2 === 0;
   const cold = now.getHours() % 2 === 0;
-  const tonight = { weather: rainy ? '小雨' : '多云', temp: cold ? '13' : '24', wind: '东北风 3级', humidity: rainy ? '85%' : '55%' };
-  const tomorrow = { weather: rainy ? '阴' : '晴', temp: cold ? '12' : '20', wind: '北风 2级', humidity: '' };
+  const tonight = { weather: rainy ? '小雨' : '多云', temp: cold ? '13' : '24', feelsLike: cold ? '11' : '26', pop: rainy ? '70' : '10', wind: '东北风 3级', humidity: rainy ? '85%' : '55%' };
+  const tomorrow = { weather: rainy ? '阴' : '晴', temp: cold ? '12' : '20', feelsLike: cold ? '10' : '21', pop: rainy ? '40' : '5', wind: '北风 2级', humidity: '' };
   const modes = tpl.commuteModes.map((mode) => {
     const nowMinutes = (MODE_DEMO_BASE[mode] || 40) + (now.getMinutes() % 9);
     const laterMinutes = nowMinutes + 6 + (now.getMinutes() % 7);
@@ -403,6 +406,68 @@ async function weatherForecast(adcode, key) {
   };
 }
 
+// 和风天气 QWeather 逐小时：能取到具体某一小时的天气 + 降水概率 + 体感温度
+function qwHour(h) {
+  if (!h) return null;
+  return {
+    weather: h.text || '未知',
+    temp: h.temp || '',
+    feelsLike: h.feelsLike || '',
+    pop: h.pop || '', // 降水概率 %
+    humidity: h.humidity ? `${h.humidity}%` : '',
+    wind: h.windDir ? (h.windScale ? `${h.windDir} ${h.windScale}级` : h.windDir) : ''
+  };
+}
+
+function pickHour(hourly, target) {
+  let best = null;
+  let bestDiff = Infinity;
+  for (const h of hourly) {
+    const diff = Math.abs(new Date(h.fxTime).getTime() - target.getTime());
+    if (diff < bestDiff) {
+      bestDiff = diff;
+      best = h;
+    }
+  }
+  return best;
+}
+
+async function qweatherWeather(lnglat, tpl, now, settings) {
+  const raw = (settings.qweatherHost || 'https://devapi.qweather.com').replace(/\/+$/, '');
+  const base = raw.startsWith('http') ? raw : `https://${raw}`;
+  const [lng, lat] = String(lnglat).split(',');
+  const loc = `${Number(lng).toFixed(2)},${Number(lat).toFixed(2)}`;
+  // 同时带 header（新版）和 key 参数（旧版 devapi），最大化兼容
+  const url = `${base}/v7/weather/24h?location=${loc}&key=${encodeURIComponent(settings.qweatherKey)}`;
+  const res = await fetch(url, { headers: { 'X-QW-Api-Key': settings.qweatherKey } });
+  const data = await res.json();
+  if (data.code !== '200' || !Array.isArray(data.hourly)) {
+    throw new Error(`QWeather 返回 ${data.code || res.status}`);
+  }
+  // 今晚下班用当天最晚的下班点；明早出门用次日出门时间
+  const eveningTime = (tpl.offworkTimes || ['18:00']).slice().sort()[Math.max(0, (tpl.offworkTimes || ['18:00']).length - 1)];
+  const tonightAt = parseTimeToDate(eveningTime, now);
+  const morningAt = new Date(parseTimeToDate(tpl.morningDepart || '08:30', now).getTime() + 24 * 3600 * 1000);
+  return {
+    city: '',
+    hourly: true,
+    tonight: qwHour(pickHour(data.hourly, tonightAt)) || { weather: '未知', temp: '' },
+    tomorrow: qwHour(pickHour(data.hourly, morningAt)) || { weather: '未知', temp: '' }
+  };
+}
+
+// 选天气源：配了和风用逐小时，否则回退高德白天/夜间；和风失败也回退
+async function getWeather(settings, originGeo, tpl, now) {
+  if (settings.qweatherKey) {
+    try {
+      return await qweatherWeather(originGeo.location, tpl, now, settings);
+    } catch {
+      // 和风失败，回退高德
+    }
+  }
+  return weatherForecast(originGeo.adcode, settings.amapKey);
+}
+
 // 交通态势：公司周边实时拥堵评价（status 1畅通 2缓行 3拥堵 4严重拥堵），即时可用，不靠积累
 async function trafficStatus(location, key) {
   try {
@@ -485,7 +550,7 @@ async function scanCommute(settings) {
         return { mode, nowMinutes, laterMinutes, deltaMinutes: laterMinutes - nowMinutes };
       })
     ),
-    weatherForecast(originGeo.adcode, settings.amapKey),
+    getWeather(settings, originGeo, tpl, now),
     trafficStatus(origin, settings.amapKey)
   ]);
 
@@ -529,6 +594,14 @@ function buildStaticMapUrl(ctx, key) {
   return u.toString();
 }
 
+function weatherPromptLine(x) {
+  if (!x || !x.weather) return '未知';
+  let s = `${x.weather} ${x.temp}°`;
+  if (x.feelsLike && x.feelsLike !== x.temp) s += `（体感${x.feelsLike}°）`;
+  if (x.pop) s += `，降水概率${x.pop}%`;
+  return s;
+}
+
 // AI 一句话决策：把接口数据翻译成人话。OpenAI 兼容接口，可指向公司内部模型。
 function buildAiPrompt(scan) {
   const modeLine = scan.modes
@@ -539,7 +612,7 @@ function buildAiPrompt(scan) {
     `按当前路况各方式：${modeLine}。`,
     scan.traffic ? `公司周边实时路况：${scan.traffic.description}（畅通占比 ${scan.traffic.expedite}）。` : '',
     scan.trend && scan.trend.enough ? `跟平时比：${scan.trend.label}。` : '',
-    `今晚：${scan.weather.tonight.weather} ${scan.weather.tonight.temp}°，明早：${scan.weather.tomorrow.weather} ${scan.weather.tomorrow.temp}°。`,
+    `今晚下班：${weatherPromptLine(scan.weather.tonight)}；明早出门：${weatherPromptLine(scan.weather.tomorrow)}。`,
     `系统结论（以此为准）：${scan.recommendText}（${scan.headline}）。`
   ].filter(Boolean).join('\n');
 }
