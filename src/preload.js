@@ -4,6 +4,8 @@ contextBridge.exposeInMainWorld('offworkRadar', {
   getSettings: () => ipcRenderer.invoke('settings:get'),
   saveSettings: (settings) => ipcRenderer.invoke('settings:save', settings),
   runScan: () => ipcRenderer.invoke('scan:run'),
+  askAi: (question) => ipcRenderer.invoke('ai:ask', question),
+  searchFood: (where) => ipcRenderer.invoke('food:search', where),
   openMap: () => ipcRenderer.invoke('map:open'),
   hideWindow: () => ipcRenderer.invoke('window:hide'),
   onScanUpdate: (callback) => {

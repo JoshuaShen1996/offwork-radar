@@ -93,6 +93,7 @@ let tray;
 let reminderTimer;
 let firedKeys = new Set();
 let lastRouteContext = null;
+let lastScan = null;
 
 function getSettingsPath() {
   return path.join(app.getPath('userData'), 'settings.json');
@@ -470,6 +471,39 @@ async function getWeather(settings, originGeo, tpl, now) {
   return weatherForecast(originGeo.adcode, settings.amapKey);
 }
 
+// 公交换乘详情：从 Web 服务接口取，含每段步行/线路 + 上下车站点（换乘地点），渲染折叠面板
+function cleanLine(name) {
+  return String(name || '').replace(/\(.*\)/, '').trim();
+}
+async function transitPlan(origin, destination, city, key) {
+  try {
+    const payload = await amapFetch('direction/transit/integrated', { origin, destination, city, cityd: city }, key);
+    const t = payload.route?.transits?.[0];
+    if (!t) return null;
+    const segments = [];
+    const lineStops = []; // 每条线路的下车站（含坐标），用于换乘点
+    for (const seg of t.segments || []) {
+      if (seg.walking && Number(seg.walking.distance) > 0) {
+        segments.push(`步行 ${Math.round(seg.walking.distance)} 米`);
+      }
+      const bl = seg.bus?.buslines?.[0];
+      if (bl) {
+        segments.push(`乘 ${cleanLine(bl.name)}：${bl.departure_stop?.name || ''} → ${bl.arrival_stop?.name || ''}（途经 ${bl.via_num ?? '?'} 站）`);
+        if (bl.arrival_stop?.location) lineStops.push({ name: bl.arrival_stop.name, location: bl.arrival_stop.location });
+      }
+      if (seg.railway?.name) {
+        segments.push(`乘 ${seg.railway.name}：${seg.railway.departure_stop?.name || ''} → ${seg.railway.arrival_stop?.name || ''}`);
+        if (seg.railway.arrival_stop?.location) lineStops.push({ name: seg.railway.arrival_stop.name, location: seg.railway.arrival_stop.location });
+      }
+    }
+    // 最后一条线路的下车站是终点侧，不算换乘点；其余下车站即换乘站
+    const transfers = lineStops.slice(0, -1);
+    return { time: Math.round(Number(t.duration || 0) / 60), distance: Number(t.distance || 0), segments, transfers };
+  } catch {
+    return null;
+  }
+}
+
 // 交通态势：公司周边实时拥堵评价（status 1畅通 2缓行 3拥堵 4严重拥堵），即时可用，不靠积累
 async function trafficStatus(location, key) {
   try {
@@ -564,11 +598,13 @@ async function scanCommute(settings) {
   const targetMin = minOfDay(parseTimeToDate(next.time, now));
   await loadHistory();
 
-  // 各方式当前耗时 + 今明天气 + 公司周边实时交通态势，一起并发
-  const [routeMins, wx, traffic] = await Promise.all([
+  // 各方式当前耗时 + 今明天气 + 实时交通态势 + 公交换乘详情（选了公交才查），一起并发
+  const wantTransit = tpl.commuteModes.includes('transit');
+  const [routeMins, wx, traffic, transitPln] = await Promise.all([
     Promise.all(tpl.commuteModes.map((mode) => route(origin, destination, mode, city, settings.amapKey))),
     getWeather(settings, originGeo, tpl, now),
-    trafficStatus(origin, settings.amapKey)
+    trafficStatus(origin, settings.amapKey),
+    wantTransit ? transitPlan(origin, destination, city, settings.amapKey) : Promise.resolve(null)
   ]);
 
   // 每个方式预测「下班点」耗时（本地历史同时段 → 系数估算回退）
@@ -598,7 +634,8 @@ async function scanCommute(settings) {
     originName: tpl.companyAddress,
     destName: tpl.homeAddress,
     modes: tpl.commuteModes,
-    city
+    city,
+    transitPlan: transitPln
   };
   const scan = buildScan('amap', tpl, now, modeResults, wx.tonight, wx.tomorrow, wx.city, routeInfo, trend, traffic);
   scan.mapUrl = buildStaticMapUrl(lastRouteContext, settings.amapKey);
@@ -686,6 +723,118 @@ async function aiSummary(settings, scan) {
   }
 }
 
+// 通用 AI 调用（关思考兜底）
+async function aiChat(settings, messages, maxTokens = 320) {
+  const base = (settings.aiBaseUrl || 'https://api.openai.com/v1').replace(/\/+$/, '');
+  const model = settings.aiModel || 'gpt-4o-mini';
+  async function call(disableThinking) {
+    const body = { model, temperature: 0.6, max_tokens: maxTokens, messages };
+    if (disableThinking) body.enable_thinking = false;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 40000);
+    try {
+      const res = await fetch(`${base}/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${settings.aiKey}` },
+        body: JSON.stringify(body),
+        signal: controller.signal
+      });
+      return { ok: res.ok, status: res.status, text: await res.text() };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  try {
+    let r = await call(true);
+    if (!r.ok && r.status === 400) r = await call(false);
+    if (!r.ok) return { text: null, error: `AI 接口 ${r.status}` };
+    const t = JSON.parse(r.text).choices?.[0]?.message?.content?.trim();
+    return { text: t || null, error: t ? null : 'AI 返回为空' };
+  } catch (e) {
+    return { text: null, error: e.name === 'AbortError' ? 'AI 超时（40s）' : e.message || 'AI 调用失败' };
+  }
+}
+
+// 问到吃的时，临时查公司/换乘站/家附近餐饮，塞进上下文供 AI 推荐
+async function foodContext(settings) {
+  const wheres = [['公司', 'company'], ['家', 'home']];
+  const transfers = lastScan?.route?.transitPlan?.transfers || [];
+  transfers.forEach((t) => wheres.push([`换乘站(${t.name})`, t.location]));
+  const parts = [];
+  for (const [label, where] of wheres) {
+    try {
+      const r = await searchFood(settings, where);
+      if (r.pois && r.pois.length) {
+        const list = r.pois
+          .slice(0, 6)
+          .map((p) => `${p.name}（${p.type}${p.rating ? ' ★' + p.rating : ''}${p.cost ? ' 人均¥' + p.cost : ''}${p.distance != null ? ' ' + p.distance + '米' : ''}）`)
+          .join('；');
+        parts.push(`${label}附近：${list}`);
+      }
+    } catch {
+      // 单个位置查询失败忽略
+    }
+  }
+  return parts.length ? `\n周边餐饮（可据此推荐具体店）：\n${parts.join('\n')}` : '';
+}
+
+// 卡片下方对话框：基于当前扫描数据回答用户的简短提问
+async function aiAsk(settings, question) {
+  if (!settings.aiKey) return { text: null, error: '未配置 AI Key（设置 → AI 一句话决策）' };
+  const q = String(question || '').slice(0, 200);
+  let ctx = lastScan ? buildAiPrompt(lastScan) : '（还没有扫描数据，先点一次"立即扫描"）';
+  if (/吃|餐|饭|美食|喝|咖啡|外卖|餐厅|宵夜|夜宵|奶茶|火锅|聚餐|食/.test(q)) {
+    ctx += await foodContext(settings);
+  }
+  const messages = [
+    {
+      role: 'system',
+      content:
+        '你是"跑路准时宝"的助手。下面给你用户当前的通勤路况、今明天气，必要时还有公司/换乘站/家附近的餐饮数据。请基于这些数据简短回答用户的提问（1~3 句，口语化、措辞职业，不要出现早退/翘班/摸鱼等词）。问"吃什么"时，从给的餐饮数据里挑几家具体推荐（可结合距离/评分）；数据里没有的别瞎编。'
+    },
+    { role: 'user', content: `【当前数据】\n${ctx}\n\n【我的问题】${q}` }
+  ];
+  return aiChat(settings, messages, 400);
+}
+
+// 附近美食：高德 POI 搜索（餐饮 050000），查家/公司附近
+async function searchFood(settings, where) {
+  if (!settings.amapKey) return { error: '先在设置里配高德 Web 服务 Key' };
+  const ctx = lastRouteContext;
+  if (!ctx) return { error: '先点一次"立即扫描"，拿到地址坐标' };
+  let location;
+  if (where === 'company') location = ctx.origin;
+  else if (where === 'home') location = ctx.destination;
+  else if (typeof where === 'string' && where.includes(',')) location = where; // 换乘站坐标
+  else location = ctx.destination;
+  try {
+    const payload = await amapFetch(
+      'place/around',
+      { location, types: '050000', radius: 1500, sortrule: 'distance', offset: 25, page: 1 },
+      settings.amapKey
+    );
+    const all = (payload.pois || []).map((p) => {
+      const be = Array.isArray(p.biz_ext) ? {} : p.biz_ext || {};
+      const cat = String(p.type || '').split('|')[0].split(';');
+      return {
+        name: p.name,
+        type: cat[1] || cat[0] || '餐饮',
+        distance: p.distance ? Number(p.distance) : null,
+        rating: be.rating || '',
+        cost: be.cost || ''
+      };
+    });
+    // 在附近候选里随机打乱，取 8 家，避免每次都是最近那几家
+    for (let i = all.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [all[i], all[j]] = [all[j], all[i]];
+    }
+    return { where, pois: all.slice(0, 8) };
+  } catch (e) {
+    return { error: e.message || '美食查询失败' };
+  }
+}
+
 function notify(scan, fromReminder = false) {
   if (Notification.isSupported()) {
     new Notification({
@@ -705,6 +854,7 @@ function notify(scan, fromReminder = false) {
 async function scanAndNotify(force = false, fromReminder = false) {
   const settings = await readSettings();
   const scan = await scanCommute(settings);
+  lastScan = scan;
   const ai = await aiSummary(settings, scan);
   scan.aiSummary = ai.text;
   scan.aiError = ai.error;
@@ -759,6 +909,8 @@ ipcMain.handle('settings:save', async (_event, settings) => {
   return saved;
 });
 ipcMain.handle('scan:run', async () => scanAndNotify(false));
+ipcMain.handle('ai:ask', async (_event, question) => aiAsk(await readSettings(), question));
+ipcMain.handle('food:search', async (_event, where) => searchFood(await readSettings(), where));
 ipcMain.handle('map:open', () => openTrafficMap());
 ipcMain.handle('window:hide', () => mainWindow?.hide());
 

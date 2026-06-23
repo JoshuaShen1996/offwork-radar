@@ -176,3 +176,22 @@ for (const [name, size, ss] of targets) {
   fs.writeFileSync(path.join(assetsDir, name), png);
   console.log(`generated assets/${name} (${size}x${size}, ${png.length} bytes)`);
 }
+
+// 额外生成 icon.ico（内嵌 256 PNG），供 Windows 快捷方式/任务栏用
+{
+  const png256 = render(256, 3);
+  const dir = Buffer.alloc(6);
+  dir.writeUInt16LE(0, 0); // reserved
+  dir.writeUInt16LE(1, 2); // type = icon
+  dir.writeUInt16LE(1, 4); // count
+  const entry = Buffer.alloc(16);
+  entry[0] = 0; // width 0 => 256
+  entry[1] = 0; // height 0 => 256
+  entry.writeUInt16LE(1, 4); // planes
+  entry.writeUInt16LE(32, 6); // bit count
+  entry.writeUInt32LE(png256.length, 8); // bytes in resource
+  entry.writeUInt32LE(22, 12); // offset (6 + 16)
+  const ico = Buffer.concat([dir, entry, png256]);
+  fs.writeFileSync(path.join(assetsDir, 'icon.ico'), ico);
+  console.log(`generated assets/icon.ico (${ico.length} bytes)`);
+}
