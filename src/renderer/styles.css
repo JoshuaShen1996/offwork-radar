@@ -147,12 +147,14 @@ h1 {
 }
 
 .icon-btn {
+  flex: none;
   padding: 7px 12px;
   border: 1px solid var(--line);
   border-radius: 9px;
   background: rgba(255, 255, 255, 0.05);
   color: var(--muted);
   font-size: 12px;
+  white-space: nowrap;
   transition: background 0.18s, color 0.18s;
 }
 

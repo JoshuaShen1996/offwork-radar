@@ -243,14 +243,10 @@ function weatherText(w) {
 }
 
 function formatCountdown(sec) {
-  if (!Number.isFinite(sec)) return '--';
+  if (!Number.isFinite(sec)) return '--:--:--';
   if (sec < 0) return '已过';
-  const h = Math.floor(sec / 3600);
-  const m = Math.floor((sec % 3600) / 60);
-  const s = sec % 60;
-  if (h > 0) return `还有 ${h} 小时 ${m} 分 ${s} 秒`;
-  if (m > 0) return `还有 ${m} 分 ${s} 秒`;
-  return `还有 ${s} 秒`;
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${pad(Math.floor(sec / 3600))}:${pad(Math.floor((sec % 3600) / 60))}:${pad(sec % 60)}`;
 }
 
 // 客户端实时算"下一个跑路点"（精确到秒）：优先今天还没到的最近一个，否则明天最早的
@@ -273,8 +269,7 @@ function updateCountdown() {
   if (!settings) return null;
   const tpl = activeTemplate();
   const next = nextOffworkClient(tpl.offworkTimes);
-  $('nextOffwork').textContent = next.time;
-  $('countdown').textContent = `跑路倒计时 · ${formatCountdown(next.secTo)}`;
+  $('countdown').textContent = `${next.time}，跑路倒计时 ${formatCountdown(next.secTo)}`;
   return next;
 }
 
@@ -434,6 +429,8 @@ async function askQuestion() {
 }
 
 /* ---------- 附近美食 ---------- */
+let foodActiveKey = null;
+const FOOD_HINT = '点上面位置查看周边餐饮（按路线 公司→家）';
 function renderFoodToggle(scan) {
   const toggle = $('foodToggle');
   toggle.innerHTML = '';
@@ -445,12 +442,20 @@ function renderFoodToggle(scan) {
   locs.forEach((l) => {
     const b = document.createElement('button');
     b.type = 'button';
-    b.className = 'food-loc' + (l.key === 'home' ? ' active' : '');
+    b.className = 'food-loc' + (l.key === foodActiveKey ? ' active' : '');
     b.textContent = l.label;
     b.addEventListener('click', () => {
-      toggle.querySelectorAll('.food-loc').forEach((x) => x.classList.remove('active'));
-      b.classList.add('active');
-      loadFood(l.key);
+      if (foodActiveKey === l.key) {
+        // 再次点选中项 → 折叠
+        foodActiveKey = null;
+        b.classList.remove('active');
+        $('foodList').innerHTML = `<p class="food-hint">${FOOD_HINT}</p>`;
+      } else {
+        foodActiveKey = l.key;
+        toggle.querySelectorAll('.food-loc').forEach((x) => x.classList.remove('active'));
+        b.classList.add('active');
+        loadFood(l.key);
+      }
     });
     toggle.appendChild(b);
   });
