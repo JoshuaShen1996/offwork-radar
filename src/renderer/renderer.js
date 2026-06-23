@@ -316,6 +316,8 @@ function renderScan(scan) {
   renderWeather(scan);
   renderMap(scan);
   renderAi(scan);
+  $('foodWrap').hidden = scan.source !== 'amap';
+  if (scan.source === 'amap') renderFoodToggle(scan);
 }
 
 /* ---------- 多通勤方式并列对比 ---------- */
@@ -324,7 +326,6 @@ function renderModes(scan) {
   row.innerHTML = '';
   const modes = scan.modes || (scan.commute ? [scan.commute] : []);
   if (!modes.length) return;
-  const ot = scan.reminder?.offworkTime || '下班点';
   const fastest = Math.min(...modes.map((m) => (m.offworkMinutes != null ? m.offworkMinutes : m.nowMinutes)));
   modes.forEach((m) => {
     const offwork = m.offworkMinutes != null ? m.offworkMinutes : m.nowMinutes;
@@ -332,11 +333,11 @@ function renderModes(scan) {
     const isSel = m.mode === currentMapMode;
     const card = document.createElement('div');
     card.className = 'mode-card' + (isBest ? ' best' : '') + (isSel ? ' selected' : '');
-    card.title = '点击在地图上看这条路线';
+    card.title = `点击在地图上看这条路线｜现在约 ${m.nowMinutes} 分，下班点预计 ${offwork} 分${m.predictSource === 'estimate' ? '（估算）' : ''}`;
     card.innerHTML = `
       <span class="mc-name">${MODE_LABEL[m.mode] || m.mode}</span>
       <strong class="mc-now">${m.nowMinutes} 分</strong>
-      <span class="mc-later">${ot} 预计 ${offwork} 分${m.predictSource === 'estimate' ? '（估算）' : ''}</span>
+      <span class="mc-later">预计 ${offwork} 分${m.predictSource === 'estimate' ? ' 估' : ''}</span>
       ${isBest ? '<span class="mc-flag">最快</span>' : ''}`;
     card.addEventListener('click', () => selectMapMode(m.mode));
     row.appendChild(card);
@@ -396,6 +397,89 @@ function renderAi(scan) {
   } else {
     aiBox.classList.remove('ai-error');
     aiBox.hidden = true;
+  }
+  $('askWrap').hidden = !scan.aiConfigured;
+}
+
+/* ---------- AI 问答框：基于当前扫描数据问点啥 ---------- */
+function appendChat(role, text) {
+  const log = $('askLog');
+  log.hidden = false;
+  const div = document.createElement('div');
+  div.className = role === 'me' ? 'chat-me' : 'chat-ai';
+  div.textContent = text;
+  log.appendChild(div);
+  log.scrollTop = log.scrollHeight;
+  return div;
+}
+
+async function askQuestion() {
+  const input = $('askInput');
+  const q = input.value.trim();
+  if (!q) return;
+  input.value = '';
+  appendChat('me', q);
+  const btn = $('askBtn');
+  btn.disabled = true;
+  const pending = appendChat('ai', '思考中…');
+  try {
+    const r = await api.askAi(q);
+    pending.textContent = r.text || `（${r.error || 'AI 没回答'}）`;
+  } catch (e) {
+    pending.textContent = `（${e.message || '出错了'}）`;
+  } finally {
+    btn.disabled = false;
+    $('askLog').scrollTop = $('askLog').scrollHeight;
+  }
+}
+
+/* ---------- 附近美食 ---------- */
+function renderFoodToggle(scan) {
+  const toggle = $('foodToggle');
+  toggle.innerHTML = '';
+  const transfers = (scan && scan.route && scan.route.transitPlan && scan.route.transitPlan.transfers) || [];
+  // 按路线顺序：公司 → 换乘站 → 家
+  const locs = [{ key: 'company', label: '公司附近' }];
+  transfers.forEach((tr) => locs.push({ key: tr.location, label: `换乘·${tr.name}` }));
+  locs.push({ key: 'home', label: '家附近' });
+  locs.forEach((l) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'food-loc' + (l.key === 'home' ? ' active' : '');
+    b.textContent = l.label;
+    b.addEventListener('click', () => {
+      toggle.querySelectorAll('.food-loc').forEach((x) => x.classList.remove('active'));
+      b.classList.add('active');
+      loadFood(l.key);
+    });
+    toggle.appendChild(b);
+  });
+}
+
+async function loadFood(where) {
+  const list = $('foodList');
+  list.innerHTML = '<p class="food-hint">查询中…</p>';
+  try {
+    const r = await api.searchFood(where);
+    if (r.error || !r.pois || !r.pois.length) {
+      list.innerHTML = `<p class="food-hint">${escapeHtml(r.error || '附近没找到餐饮')}</p>`;
+      return;
+    }
+    list.innerHTML = r.pois
+      .map((p) => {
+        const meta = [
+          p.type,
+          p.distance != null ? `${p.distance}米` : '',
+          p.rating ? `★${p.rating}` : '',
+          p.cost ? `人均¥${p.cost}` : ''
+        ]
+          .filter(Boolean)
+          .join(' · ');
+        return `<div class="food-item"><div class="food-name">${escapeHtml(p.name)}</div><div class="food-meta">${escapeHtml(meta)}</div></div>`;
+      })
+      .join('');
+  } catch (e) {
+    list.innerHTML = `<p class="food-hint">${escapeHtml(e.message || '查询失败')}</p>`;
   }
 }
 
@@ -528,6 +612,22 @@ function buildRoutePanel(mode, result) {
   panel.hidden = false;
 }
 
+// 公交面板：摘要 + 折叠的换乘详情（步行/线路/上下车站点）
+function buildTransitPanel(plan) {
+  const panel = $('mapPanel');
+  if (!plan || !plan.segments || !plan.segments.length) {
+    panel.hidden = true;
+    return;
+  }
+  const km = plan.distance ? ` · ${(plan.distance / 1000).toFixed(1)} 公里` : '';
+  const summary = `${MODE_LABEL.transit} · 约 ${plan.time} 分钟${km}`;
+  const stepsHtml = `<details class="route-steps"><summary>展开换乘详情（${plan.segments.length} 段）</summary><ol>${plan.segments
+    .map((s) => `<li>${escapeHtml(s)}</li>`)
+    .join('')}</ol></details>`;
+  panel.innerHTML = `<div class="route-summary">${escapeHtml(summary)}</div>${stepsHtml}`;
+  panel.hidden = false;
+}
+
 let amapMap = null;
 let amapRoute = null;
 let amapMarkers = [];
@@ -564,16 +664,24 @@ async function renderInteractiveMap(route, mode) {
   panel.innerHTML = '';
   panel.hidden = true;
 
-  // 驾车/公交：画线 + 标记，但面板用自定义紧凑版（默认只显示首选线路一行，步骤折叠）
-  if (useMode === 'driving' || useMode === 'transit') {
+  // 公交：JS 插件只负责画线 + 换乘站标记；面板换乘详情用 Web 服务预取数据，默认折叠
+  if (useMode === 'transit') {
     try {
-      if (useMode === 'transit') {
-        amapRoute = new AMap.Transfer({ map: amapMap, hideMarkers: false, autoFitView: true, city: route.city || '全国', cityd: route.city || '全国' });
-      } else {
-        amapRoute = new AMap.Driving({ map: amapMap, showTraffic: true, hideMarkers: false, autoFitView: true });
-      }
+      amapRoute = new AMap.Transfer({ map: amapMap, hideMarkers: false, autoFitView: true, city: route.city || '全国', cityd: route.city || '全国' });
+      amapRoute.search([olng, olat], [dlng, dlat], () => {});
+    } catch {
+      /* 画线失败不影响面板 */
+    }
+    buildTransitPanel(route.transitPlan);
+    return;
+  }
+
+  // 驾车：画线 + 标记，面板用自定义紧凑版（默认只显示首选线路一行，步骤折叠）
+  if (useMode === 'driving') {
+    try {
+      amapRoute = new AMap.Driving({ map: amapMap, showTraffic: true, hideMarkers: false, autoFitView: true });
       amapRoute.search([olng, olat], [dlng, dlat], (status, result) => {
-        if (status === 'complete') buildRoutePanel(useMode, result);
+        if (status === 'complete') buildRoutePanel('driving', result);
         else panel.hidden = true;
       });
     } catch {
@@ -621,6 +729,10 @@ async function init() {
   $('mapZoom').addEventListener('click', () => api.openMap());
   $('mapImg').addEventListener('click', () => api.openMap());
   $('addTimeBtn').addEventListener('click', () => addTimeRow('18:00'));
+  $('askBtn').addEventListener('click', askQuestion);
+  $('askInput').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') askQuestion();
+  });
 
   $('settingsForm').addEventListener('submit', async (event) => {
     event.preventDefault();

@@ -51,6 +51,14 @@
           <p id="aiSummary"></p>
         </div>
 
+        <div id="askWrap" class="ask-wrap" hidden>
+          <div id="askLog" class="ask-log" hidden></div>
+          <div class="ask-row">
+            <input id="askInput" class="ask-input" placeholder="问 AI：明早要带伞吗 / 开车还是地铁快…" maxlength="60" />
+            <button id="askBtn" class="ask-btn" type="button">问</button>
+          </div>
+        </div>
+
         <div class="advice">
           <p class="advice-label">下一个跑路点 <span id="nextOffwork">--</span></p>
           <p id="countdown" class="countdown-label">跑路倒计时 · --</p>
@@ -94,6 +102,12 @@
             </div>
           </div>
           <p id="weatherAction" class="weather-action">今晚是未知世界，先扫一眼。</p>
+        </div>
+
+        <div id="foodWrap" class="food-wrap" hidden>
+          <div class="food-title">🍜 附近美食</div>
+          <div id="foodToggle" class="food-toggle"></div>
+          <div id="foodList" class="food-list"><p class="food-hint">点上面位置查看周边餐饮（按路线 公司→家）</p></div>
         </div>
       </section>
 
