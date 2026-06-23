@@ -1,6 +1,6 @@
 {
   "name": "offwork-radar",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "跑路准时宝 - cross-platform desktop widget for commute and weather reminders.",
   "main": "src/main.js",
   "scripts": {
