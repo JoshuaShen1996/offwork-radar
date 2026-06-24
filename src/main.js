@@ -57,8 +57,18 @@ const GLOBAL_DEFAULTS = {
   notificationsEnabled: true,
   aiKey: process.env.AI_KEY || process.env.OPENAI_API_KEY || '',
   aiBaseUrl: process.env.AI_BASE_URL || '',
-  aiModel: process.env.AI_MODEL || ''
+  aiModel: process.env.AI_MODEL || '',
+  // 网约车（快车）估价费率，默认按一线城市主流快车；可在 settings.json 调
+  kuaicheRate: { base: 14, baseKm: 3, perKm: 2, perMin: 0.5 }
 };
+
+// 快车估价：起步价 + 超出起步公里的里程费 + 时长费（距离 km、时长 min）
+function estimateKuaiche(distanceKm, durationMin, rate) {
+  if (!distanceKm || distanceKm <= 0) return null;
+  const r = rate || GLOBAL_DEFAULTS.kuaicheRate;
+  const fare = r.base + Math.max(0, distanceKm - r.baseKm) * r.perKm + (durationMin || 0) * r.perMin;
+  return Math.max(r.base, Math.round(fare));
+}
 
 // 兼容旧的单配置存档，统一升级为「模板」结构
 function normalizeSettings(raw) {
@@ -310,7 +320,9 @@ function buildMockScan(tpl) {
     const nowMinutes = (MODE_DEMO_BASE[mode] || 40) + (now.getMinutes() % 9);
     const f = mode === 'driving' ? 1.18 : mode === 'transit' ? 1.06 : 1;
     const offworkMinutes = Math.round(nowMinutes * f) + (f > 1 ? now.getMinutes() % 4 : 0);
-    return { mode, nowMinutes, offworkMinutes, predictSource: 'estimate', deltaMinutes: offworkMinutes - nowMinutes };
+    const taxiCost = mode === 'driving' ? 16 + Math.round(nowMinutes * 1.4) : null;
+    const kuaicheCost = mode === 'driving' ? 13 + Math.round(nowMinutes * 1.15) : null;
+    return { mode, nowMinutes, offworkMinutes, predictSource: 'estimate', deltaMinutes: offworkMinutes - nowMinutes, taxiCost, kuaicheCost };
   });
   const baseline = modes[0].nowMinutes - 5;
   const trend = { enough: true, baselineMinutes: baseline, deltaVsUsual: 5, label: '比平时慢约 5 分（演示数据）' };
@@ -357,7 +369,7 @@ async function route(origin, destination, mode, city, key) {
   if (mode === 'bicycling') {
     const payload = await amapFetch('direction/bicycling', params, key, 'v4');
     const first = payload.data?.paths?.[0];
-    return Math.max(1, Math.round(Number(first?.duration || 0) / 60));
+    return { minutes: Math.max(1, Math.round(Number(first?.duration || 0) / 60)), taxiCost: null, distanceKm: null };
   }
   if (mode === 'transit') {
     params.city = city;
@@ -366,12 +378,17 @@ async function route(origin, destination, mode, city, key) {
   const payload = await amapFetch(routeApiForMode(mode), params, key);
   const routeData = payload.route || {};
   let seconds = 0;
+  let meters = 0;
   if (mode === 'transit') {
     seconds = Number(routeData.transits?.[0]?.duration || 0);
+    meters = Number(routeData.transits?.[0]?.distance || 0);
   } else {
     seconds = Number(routeData.paths?.[0]?.duration || 0);
+    meters = Number(routeData.paths?.[0]?.distance || 0);
   }
-  return Math.max(1, Math.round(seconds / 60));
+  // 驾车接口返回出租车预估费用 taxi_cost
+  const taxiCost = mode === 'driving' && routeData.taxi_cost ? Math.round(Number(routeData.taxi_cost)) : null;
+  return { minutes: Math.max(1, Math.round(seconds / 60)), taxiCost, distanceKm: meters > 0 ? meters / 1000 : null };
 }
 
 function windText(dir, power) {
@@ -609,9 +626,17 @@ async function scanCommute(settings) {
 
   // 每个方式预测「下班点」耗时（本地历史同时段 → 系数估算回退）
   const modeResults = tpl.commuteModes.map((mode, i) => {
-    const nowMinutes = routeMins[i];
+    const nowMinutes = routeMins[i].minutes;
     const pred = predictAtTime(mode, targetMin, nowMinutes, now);
-    return { mode, nowMinutes, offworkMinutes: pred.minutes, predictSource: pred.source, deltaMinutes: pred.minutes - nowMinutes };
+    return {
+      mode,
+      nowMinutes,
+      offworkMinutes: pred.minutes,
+      predictSource: pred.source,
+      deltaMinutes: pred.minutes - nowMinutes,
+      taxiCost: routeMins[i].taxiCost,
+      kuaicheCost: mode === 'driving' ? estimateKuaiche(routeMins[i].distanceKm, nowMinutes, settings.kuaicheRate) : null
+    };
   });
 
   lastRouteContext = {

@@ -293,7 +293,6 @@ function renderScan(scan) {
   $('riskLabel').textContent = RISK_LABEL[scan.risk] || '待扫描';
   $('sourceTag').textContent = scan.source === 'amap' ? '实时接口' : '演示数据';
   updateCountdown();
-  $('recommendText').textContent = scan.recommendText || '--';
   $('headline').textContent = scan.headline || '';
   $('suggestion').textContent = scan.suggestion || '';
   const tParts = [];
@@ -333,6 +332,8 @@ function renderModes(scan) {
       <span class="mc-name">${MODE_LABEL[m.mode] || m.mode}</span>
       <strong class="mc-now">${m.nowMinutes} 分</strong>
       <span class="mc-later">预计 ${offwork} 分${m.predictSource === 'estimate' ? ' 估' : ''}</span>
+      ${m.taxiCost ? `<span class="mc-taxi">出租¥${m.taxiCost}</span>` : ''}
+      ${m.kuaicheCost ? `<span class="mc-kuaiche">快车¥${m.kuaicheCost}</span>` : ''}
       ${isBest ? '<span class="mc-flag">最快</span>' : ''}`;
     card.addEventListener('click', () => selectMapMode(m.mode));
     row.appendChild(card);
